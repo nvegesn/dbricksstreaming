@@ -10,7 +10,8 @@
     "topic": "starbucks_live_orders",
     "consumer_group_id": "starbucks-ops-metrics-dev-cg",
     "starting_offsets": "latest",
-    "fail_on_data_loss": "false"
+    "fail_on_data_loss": "false",
+    "login_module": "kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule"
   },
   "schema_registry": {
     "secret_scope": "starbucks-confluent-scope",

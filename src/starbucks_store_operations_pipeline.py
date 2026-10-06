@@ -212,31 +212,19 @@ def get_credential(spark, dbutils, scope, key, env_var, default=""):
     return default
 
 
-def get_kafka_login_module(spark, dbutils=None):
+def get_kafka_login_module(config=None, spark=None):
     """
     Resolves the appropriate Kafka PlainLoginModule class.
-    Databricks Runtime & Databricks Serverless relocate/shade Kafka classes under `kafkashaded.org.apache.kafka`.
-    Vanilla open-source Apache Spark uses `org.apache.kafka`.
+    Databricks Runtime & Databricks Serverless require `kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule`.
+    Defaults directly to the shaded class unless explicitly set in config.
     """
-    try:
-        if hasattr(spark, "_jvm") and spark._jvm is not None:
-            spark._jvm.java.lang.Class.forName("kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule")
-            return "kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule"
-    except Exception:
-        pass
+    if config:
+        configured = config.get("confluent_kafka", {}).get("login_module")
+        if configured:
+            return configured
 
-    is_databricks = (
-        bool(dbutils)
-        or "DATABRICKS_RUNTIME_VERSION" in os.environ
-        or "DB_CLUSTER_ID" in os.environ
-        or "DATABRICKS_HOST" in os.environ
-        or any("databricks" in k.lower() for k in os.environ)
-    )
-
-    if is_databricks:
-        return "kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule"
-
-    return "org.apache.kafka.common.security.plain.PlainLoginModule"
+    # Databricks Runtime and Databricks Serverless default
+    return "kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule"
 
 
 def build_kafka_source(spark, dbutils, config):
@@ -260,7 +248,9 @@ def build_kafka_source(spark, dbutils, config):
         kafka_conf["api_secret_ref"], "KAFKA_API_SECRET", ""
     )
 
-    login_module = get_kafka_login_module(spark, dbutils)
+    login_module = get_kafka_login_module(config, spark)
+    print(f">> Kafka SASL LoginModule: {login_module}")
+
     jaas_config = (
         f"{login_module} required "
         f"username='{api_key}' "

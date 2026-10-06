@@ -9,12 +9,18 @@
 
 import os
 import sys
+import importlib
 
 # Ensure repository root is in Python sys.path when running from Databricks Git Folders
 notebook_dir = os.getcwd()
 repo_root = os.path.dirname(notebook_dir) if "notebooks" in notebook_dir else notebook_dir
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
+
+# Force eviction of cached Python modules so git pull changes apply immediately
+for mod_name in list(sys.modules.keys()):
+    if mod_name.startswith("src.") or mod_name == "src":
+        sys.modules.pop(mod_name, None)
 
 print(f"Active Workspace Root: {repo_root}")
 
@@ -25,6 +31,9 @@ print(f"Active Workspace Root: {repo_root}")
 # MAGIC Selects `community_edition_config.json` for DBFS storage paths and single-node tuning parameters.
 
 # COMMAND ----------
+
+import src.starbucks_store_operations_pipeline as _sbux_pipeline
+importlib.reload(_sbux_pipeline)
 
 from pyspark.sql.functions import col
 from src.starbucks_store_operations_pipeline import (
