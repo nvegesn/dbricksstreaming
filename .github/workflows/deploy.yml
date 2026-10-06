@@ -58,37 +58,64 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Check Databricks Credentials
+        id: check_creds
+        run: |
+          if [ -z "$DATABRICKS_HOST" ] || { [ -z "$DATABRICKS_TOKEN" ] && [ -z "$DATABRICKS_CLIENT_SECRET" ]; }; then
+            echo ">> DATABRICKS_HOST or authentication secrets (DATABRICKS_TOKEN/CLIENT_SECRET) not set in GitHub Secrets."
+            echo ">> Skipping automated DAB deployment. To enable CI/CD, add secrets in GitHub Repository Settings."
+            echo "skip_deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Databricks CLI
+        if: steps.check_creds.outputs.skip_deploy != 'true'
         uses: databricks/setup-cli@main
 
       - name: Provision / Sync Confluent Secrets to Databricks Secret Scope
-        # Synchronizes Confluent API credentials securely into Databricks Secret Scope
+        if: steps.check_creds.outputs.skip_deploy != 'true'
+        # Modern Databricks CLI (v0.200+) uses positional arguments for scope and key
         run: |
           echo ">> Ensuring Secret Scope 'starbucks-confluent-scope' exists in Databricks..."
-          databricks secrets create-scope --scope starbucks-confluent-scope || true
+          databricks secrets create-scope starbucks-confluent-scope || true
 
           echo ">> Syncing Kafka & Schema Registry credentials from GitHub Secrets..."
-          databricks secrets put-secret --scope starbucks-confluent-scope --key kafka-bootstrap-servers --string-value "${{ secrets.CONFLUENT_BOOTSTRAP_SERVERS }}"
-          databricks secrets put-secret --scope starbucks-confluent-scope --key kafka-api-key --string-value "${{ secrets.CONFLUENT_KAFKA_API_KEY }}"
-          databricks secrets put-secret --scope starbucks-confluent-scope --key kafka-api-secret --string-value "${{ secrets.CONFLUENT_KAFKA_API_SECRET }}"
-          databricks secrets put-secret --scope starbucks-confluent-scope --key schema-registry-url --string-value "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_URL }}"
-          databricks secrets put-secret --scope starbucks-confluent-scope --key schema-registry-api-key --string-value "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_API_KEY }}"
-          databricks secrets put-secret --scope starbucks-confluent-scope --key schema-registry-api-secret --string-value "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_API_SECRET }}"
+          if [ -n "${{ secrets.CONFLUENT_BOOTSTRAP_SERVERS }}" ]; then
+            databricks secrets put-secret starbucks-confluent-scope kafka-bootstrap-servers --string-value "${{ secrets.CONFLUENT_BOOTSTRAP_SERVERS }}" || true
+          fi
+          if [ -n "${{ secrets.CONFLUENT_KAFKA_API_KEY }}" ]; then
+            databricks secrets put-secret starbucks-confluent-scope kafka-api-key --string-value "${{ secrets.CONFLUENT_KAFKA_API_KEY }}" || true
+          fi
+          if [ -n "${{ secrets.CONFLUENT_KAFKA_API_SECRET }}" ]; then
+            databricks secrets put-secret starbucks-confluent-scope kafka-api-secret --string-value "${{ secrets.CONFLUENT_KAFKA_API_SECRET }}" || true
+          fi
+          if [ -n "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_URL }}" ]; then
+            databricks secrets put-secret starbucks-confluent-scope schema-registry-url --string-value "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_URL }}" || true
+          fi
+          if [ -n "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_API_KEY }}" ]; then
+            databricks secrets put-secret starbucks-confluent-scope schema-registry-api-key --string-value "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_API_KEY }}" || true
+          fi
+          if [ -n "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_API_SECRET }}" ]; then
+            databricks secrets put-secret starbucks-confluent-scope schema-registry-api-secret --string-value "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_API_SECRET }}" || true
+          fi
 
       - name: Validate Databricks Asset Bundle
+        if: steps.check_creds.outputs.skip_deploy != 'true'
         run: |
           databricks bundle validate -t ${{ env.TARGET_ENV }} \
             --var="databricks_host=${{ secrets.DATABRICKS_HOST }}" \
             --var="databricks_client_id=${{ secrets.DATABRICKS_CLIENT_ID }}"
 
       - name: Deploy Pipeline Bundle & Cluster Definition
+        if: steps.check_creds.outputs.skip_deploy != 'true'
         run: |
           databricks bundle deploy -t ${{ env.TARGET_ENV }} \
             --var="databricks_host=${{ secrets.DATABRICKS_HOST }}" \
             --var="databricks_client_id=${{ secrets.DATABRICKS_CLIENT_ID }}"
 
       - name: Start / Refresh Streaming Workflow (Optional on Production Merge)
-        if: github.ref == 'refs/heads/main'
+        if: steps.check_creds.outputs.skip_deploy != 'true' && github.ref == 'refs/heads/main'
         run: |
           echo ">> Triggering active streaming query execution..."
           databricks bundle run -t prod starbucks_realtime_store_ops_job
