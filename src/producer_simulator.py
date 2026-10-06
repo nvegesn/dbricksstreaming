@@ -12,6 +12,9 @@ PURPOSE:
 ================================================================================
 """
 
+import os
+import sys
+import argparse
 import time
 import random
 import uuid
@@ -19,6 +22,17 @@ import struct
 import io
 import json
 from datetime import datetime, timezone, timedelta
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+try:
+    import requests
+except ImportError:
+    requests = None
 
 try:
     import fastavro
@@ -210,41 +224,182 @@ def encode_confluent_avro(record, schema_id=101):
     return buffer.getvalue()
 
 
-def run_simulation(num_batches=5, orders_per_batch=20):
+def fetch_schema_id_from_registry(sr_url, sr_api_key, sr_api_secret, subject="starbucks_live_orders-value"):
+    """
+    Attempts to fetch the registered schema ID dynamically from Confluent Schema Registry.
+    """
+    if not sr_url or not requests:
+        return None
+    try:
+        url = f"{sr_url.rstrip('/')}/subjects/{subject}/versions/latest"
+        auth = (sr_api_key, sr_api_secret) if sr_api_key and sr_api_secret else None
+        headers = {"Accept": "application/vnd.schemaregistry.v1+json"}
+        resp = requests.get(url, auth=auth, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            schema_id = data.get("id")
+            print(f"[SCHEMA REGISTRY] Dynamically retrieved Schema ID {schema_id} for subject '{subject}'")
+            return schema_id
+        else:
+            print(f"[SCHEMA REGISTRY WARNING] Could not fetch schema ID (HTTP {resp.status_code}): {resp.text}")
+    except Exception as e:
+        print(f"[SCHEMA REGISTRY WARNING] Exception fetching schema ID: {e}")
+    return None
+
+
+def run_simulation(
+    num_batches=5,
+    orders_per_batch=20,
+    interval_seconds=1.0,
+    is_live=False,
+    continuous=False,
+    bootstrap_servers=None,
+    api_key=None,
+    api_secret=None,
+    sr_url=None,
+    sr_api_key=None,
+    sr_api_secret=None,
+    topic="starbucks_live_orders",
+    schema_id=None
+):
     """
     Executes mock stream simulation demonstrating skew and late events.
+    Optionally streams directly to Confluent Cloud Kafka if is_live=True.
     """
     print("=" * 70)
     print("STARBUCKS TELEMETRY SIMULATOR: MORNING RUSH SIMULATION")
+    print(f"Mode: {'LIVE CONFLUENT KAFKA PRODUCER' if is_live else 'MOCK SIMULATION (DRY RUN)'}")
     print("=" * 70)
 
-    for b in range(1, num_batches + 1):
-        print(f"\n--- Emitting Simulated Micro-Batch #{b} ---")
-        batch_events = []
-        
-        # 1. Flagship Store Skew (Times Square): 65% of volume
-        for _ in range(int(orders_per_batch * 0.65)):
-            batch_events.append(generate_simulated_order(is_times_square=True))
+    producer = None
+    if is_live:
+        if Producer is None:
+            raise RuntimeError("confluent-kafka Python library is not installed. Run: pip install confluent-kafka")
+        if not bootstrap_servers or not api_key or not api_secret:
+            raise ValueError("Live mode requires bootstrap_servers, api_key, and api_secret!")
 
-        # 2. Subway Commuter (12-minute late arrival): 10% of volume
-        for _ in range(max(1, int(orders_per_batch * 0.10))):
-            batch_events.append(generate_simulated_order(is_subway_commuter=True))
+        producer_conf = {
+            "bootstrap.servers": bootstrap_servers,
+            "security.protocol": "SASL_SSL",
+            "sasl.mechanisms": "PLAIN",
+            "sasl.username": api_key,
+            "sasl.password": api_secret,
+            "client.id": "starbucks-simulator-producer",
+            "linger.ms": 10,
+            "acks": "all"
+        }
+        producer = Producer(producer_conf)
+        print(f"[KAFKA] Connected producer to {bootstrap_servers} (Topic: {topic})")
 
-        # 3. Regular Stores: 25% of volume
-        for _ in range(int(orders_per_batch * 0.25)):
-            batch_events.append(generate_simulated_order(is_times_square=False))
+        # Resolve Schema ID
+        if schema_id is None and sr_url:
+            schema_id = fetch_schema_id_from_registry(
+                sr_url, sr_api_key, sr_api_secret, subject=f"{topic}-value"
+            )
+        if schema_id is None:
+            schema_id = 101
+            print(f"[SCHEMA REGISTRY] Using default Schema ID: {schema_id}")
 
-        print(f"Generated {len(batch_events)} order events.")
-        sample = batch_events[0]
-        print(f"Sample Event: Store={sample['store_id']}, Ch={sample['channel']}, "
-              f"Amount=${sample['transaction_amount']}, Placed={sample['order_placed_timestamp']}")
+    delivered_count = 0
+    failed_count = 0
 
-        if fastavro:
-            sample_encoded = encode_confluent_avro(sample, schema_id=101)
-            print(f"Encoded Confluent Avro Wire Payload Length: {len(sample_encoded)} bytes")
+    def delivery_report(err, msg):
+        nonlocal delivered_count, failed_count
+        if err is not None:
+            failed_count += 1
+            print(f"[PRODUCE ERROR] Delivery failed for message {msg.key()}: {err}")
+        else:
+            delivered_count += 1
 
-        time.sleep(1)
+    batch_idx = 0
+    try:
+        while True:
+            batch_idx += 1
+            if not continuous and batch_idx > num_batches:
+                break
+
+            print(f"\n--- Emitting Batch #{batch_idx} ({orders_per_batch} orders) ---")
+            batch_events = []
+
+            # 1. Flagship Store Skew (Times Square): 65% of volume
+            for _ in range(int(orders_per_batch * 0.65)):
+                batch_events.append(generate_simulated_order(is_times_square=True))
+
+            # 2. Subway Commuter (12-minute late arrival): 10% of volume
+            for _ in range(max(1, int(orders_per_batch * 0.10))):
+                batch_events.append(generate_simulated_order(is_subway_commuter=True))
+
+            # 3. Regular Stores: 25% of volume
+            for _ in range(int(orders_per_batch * 0.25)):
+                batch_events.append(generate_simulated_order(is_times_square=False))
+
+            sample = batch_events[0]
+            print(f"Sample Event: Store={sample['store_id']}, Ch={sample['channel']}, "
+                  f"Amount=${sample['transaction_amount']}, Placed={sample['order_placed_timestamp']}")
+
+            if is_live and producer:
+                active_schema_id = int(schema_id or 101)
+                for order in batch_events:
+                    payload = encode_confluent_avro(order, schema_id=active_schema_id)
+                    producer.produce(
+                        topic=topic,
+                        key=order["store_id"].encode("utf-8"),
+                        value=payload,
+                        on_delivery=delivery_report
+                    )
+                producer.poll(0)
+                print(f"[KAFKA] Dispatched {len(batch_events)} orders to topic '{topic}'.")
+            else:
+                if fastavro:
+                    sample_encoded = encode_confluent_avro(sample, schema_id=101)
+                    print(f"Encoded Confluent Avro Wire Payload Length: {len(sample_encoded)} bytes")
+
+            time.sleep(interval_seconds)
+
+    except KeyboardInterrupt:
+        print("\n[STOP] Received KeyboardInterrupt. Shutting down generator...")
+
+    if is_live and producer:
+        print("[KAFKA] Flushing producer buffer...")
+        producer.flush(10)
+        print(f"[KAFKA] Final Delivery Stats: {delivered_count} delivered successfully, {failed_count} failed.")
+
+    print(f"\n[DONE] Simulation completed. Processed {batch_idx if continuous else min(batch_idx, num_batches)} batches.")
 
 
 if __name__ == "__main__":
-    run_simulation()
+    parser = argparse.ArgumentParser(description="Starbucks Telemetry Order Stream Simulator")
+    parser.add_argument("--live", action="store_true", help="Publish directly to live Confluent Cloud Kafka")
+    parser.add_argument("--continuous", action="store_true", help="Stream indefinitely until stopped (Ctrl+C)")
+    parser.add_argument("--batches", type=int, default=5, help="Number of batches to emit (default: 5)")
+    parser.add_argument("--orders-per-batch", type=int, default=20, help="Orders per batch (default: 20)")
+    parser.add_argument("--interval", type=float, default=1.0, help="Seconds between batches (default: 1.0)")
+    parser.add_argument("--topic", type=str, default=os.getenv("KAFKA_TOPIC", "starbucks_live_orders"))
+    parser.add_argument("--schema-id", type=int, default=int(os.getenv("SCHEMA_ID")) if os.getenv("SCHEMA_ID") else None)
+    parser.add_argument("--bootstrap-servers", type=str, default=os.getenv("KAFKA_BOOTSTRAP_SERVERS"))
+    parser.add_argument("--api-key", type=str, default=os.getenv("KAFKA_API_KEY"))
+    parser.add_argument("--api-secret", type=str, default=os.getenv("KAFKA_API_SECRET"))
+    parser.add_argument("--schema-registry-url", type=str, default=os.getenv("SCHEMA_REGISTRY_URL"))
+    parser.add_argument("--sr-api-key", type=str, default=os.getenv("SCHEMA_REGISTRY_API_KEY"))
+    parser.add_argument("--sr-api-secret", type=str, default=os.getenv("SCHEMA_REGISTRY_API_SECRET"))
+
+    args = parser.parse_args()
+
+    # If live flag is explicitly set OR both bootstrap servers and api key are available and live flag wasn't explicitly denied
+    is_live_mode = args.live or (args.bootstrap_servers and args.api_key and args.api_secret and "--no-live" not in sys.argv)
+
+    run_simulation(
+        num_batches=args.batches,
+        orders_per_batch=args.orders_per_batch,
+        interval_seconds=args.interval,
+        is_live=is_live_mode,
+        continuous=args.continuous,
+        bootstrap_servers=args.bootstrap_servers,
+        api_key=args.api_key,
+        api_secret=args.api_secret,
+        sr_url=args.schema_registry_url,
+        sr_api_key=args.sr_api_key,
+        sr_api_secret=args.sr_api_secret,
+        topic=args.topic,
+        schema_id=args.schema_id
+    )

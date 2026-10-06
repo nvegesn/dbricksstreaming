@@ -26,6 +26,7 @@ print(f"Active Workspace Root: {repo_root}")
 
 # COMMAND ----------
 
+from pyspark.sql.functions import col
 from src.starbucks_store_operations_pipeline import (
     load_pipeline_config,
     init_spark_session,
@@ -35,6 +36,19 @@ from src.starbucks_store_operations_pipeline import (
     process_and_write_silver_stream,
     StarbucksStreamMetricsListener
 )
+
+# Optional interactive widgets for Community Edition (fills from env vars or allows manual entry)
+try:
+    dbutils = get_dbutils(spark)
+    if dbutils:
+        dbutils.widgets.text("KAFKA_BOOTSTRAP_SERVERS", os.getenv("KAFKA_BOOTSTRAP_SERVERS", ""), "1. Kafka Bootstrap Server")
+        dbutils.widgets.text("KAFKA_API_KEY", os.getenv("KAFKA_API_KEY", ""), "2. Kafka API Key")
+        dbutils.widgets.text("KAFKA_API_SECRET", os.getenv("KAFKA_API_SECRET", ""), "3. Kafka API Secret")
+        dbutils.widgets.text("SCHEMA_REGISTRY_URL", os.getenv("SCHEMA_REGISTRY_URL", ""), "4. Schema Registry URL")
+        dbutils.widgets.text("SCHEMA_REGISTRY_API_KEY", os.getenv("SCHEMA_REGISTRY_API_KEY", ""), "5. SR API Key")
+        dbutils.widgets.text("SCHEMA_REGISTRY_API_SECRET", os.getenv("SCHEMA_REGISTRY_API_SECRET", ""), "6. SR API Secret")
+except Exception:
+    pass
 
 config_path = os.path.join(repo_root, "config", "community_edition_config.json")
 config = load_pipeline_config(config_path)

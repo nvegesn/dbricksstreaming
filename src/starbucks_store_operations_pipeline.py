@@ -168,10 +168,12 @@ def get_credential(spark, dbutils, scope, key, env_var, default=""):
     """
     Production-grade multi-tier credential resolver:
     Tier 1 (Enterprise / Commercial): Databricks Secret Scope via dbutils.secrets
-    Tier 2 (Community / Free Edition): Cluster Environment Variables (os.environ)
-    Tier 3 (Alternative / Container): Spark Session Configuration (spark.conf)
+    Tier 2 (Interactive / Community Edition): Databricks Notebook Widgets (dbutils.widgets)
+    Tier 3 (Cluster / Container): Environment Variables (os.environ)
+    Tier 4 (Alternative / Spark Conf): Spark Session Configuration (spark.conf)
     """
     if dbutils:
+        # Tier 1: Secret Scope
         try:
             val = dbutils.secrets.get(scope=scope, key=key)
             if val:
@@ -179,10 +181,27 @@ def get_credential(spark, dbutils, scope, key, env_var, default=""):
         except Exception:
             pass  # Fall through gracefully in Community Edition where Secret Scopes are restricted
 
+        # Tier 2: Interactive Widgets
+        try:
+            val = dbutils.widgets.get(env_var)
+            if val and str(val).strip():
+                return str(val).strip()
+        except Exception:
+            pass
+
+        try:
+            val = dbutils.widgets.get(key)
+            if val and str(val).strip():
+                return str(val).strip()
+        except Exception:
+            pass
+
+    # Tier 3: Environment Variables
     env_val = os.getenv(env_var)
     if env_val:
         return env_val
 
+    # Tier 4: Spark Session Configuration
     try:
         conf_val = spark.conf.get(f"spark.secrets.{key}")
         if conf_val:

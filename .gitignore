@@ -37,6 +37,7 @@ venv.bak/
 # Environment and secrets
 .env
 .env.*
+!.env.example
 secrets.json
 *.pem
 *.key
