@@ -129,3 +129,21 @@ else:
 display(
     df_silver.orderBy(col("window_end").desc(), col("avg_wait_time_seconds").desc())
 )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 4. Bronze Audit Layer Inspection
+# MAGIC Inspect raw ingestion metadata, Kafka offsets, and published vs ingested timestamps.
+
+# COMMAND ----------
+
+bronze_table_name = config.get("delta_lake", {}).get("bronze_table_name")
+bronze_path = config.get("delta_lake", {}).get("bronze_table_path")
+
+if bronze_table_name:
+    df_bronze = spark.table(bronze_table_name)
+else:
+    df_bronze = spark.read.format("delta").load(bronze_path)
+
+display(df_bronze.orderBy(col("bronze_ingestion_timestamp").desc()).limit(20))
