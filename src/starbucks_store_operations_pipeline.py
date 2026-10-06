@@ -33,7 +33,8 @@ from pyspark.sql.functions import (
     round as _round,
     window,
     coalesce,
-    unix_timestamp
+    unix_timestamp,
+    expr
 )
 from pyspark.sql.avro.functions import from_avro
 from pyspark.sql.streaming import StreamingQueryListener
@@ -398,10 +399,54 @@ def write_bronze_stream(kafka_raw_df, config):
     return writer.start(delta_conf["bronze_table_path"])
 
 
+def load_avro_schema_json():
+    """
+    Loads the Avro schema JSON from schemas/starbucks_live_orders_value.avsc
+    for local parsing mode or when Schema Registry credentials are not provided.
+    """
+    candidates = [
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "schemas", "starbucks_live_orders_value.avsc"),
+        os.path.join(os.getcwd(), "schemas", "starbucks_live_orders_value.avsc"),
+        os.path.join(os.path.dirname(os.getcwd()), "schemas", "starbucks_live_orders_value.avsc")
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            with open(p, "r") as f:
+                return f.read()
+
+    # Self-contained JSON schema fallback matching starbucks_live_orders_value.avsc
+    return json.dumps({
+        "type": "record",
+        "name": "LiveOrderEvent",
+        "namespace": "com.starbucks.analytics.orders",
+        "fields": [
+            {"name": "order_id", "type": "string"},
+            {"name": "store_id", "type": "string"},
+            {"name": "customer_id", "type": ["null", "string"], "default": None},
+            {"name": "channel", "type": {"type": "enum", "name": "OrderChannel", "symbols": ["IN_STORE_POS", "DRIVE_THRU", "MOBILE_APP_PICKUP", "MOBILE_APP_DELIVERY"]}},
+            {"name": "order_placed_timestamp", "type": "string"},
+            {"name": "order_fulfilled_timestamp", "type": ["null", "string"], "default": None},
+            {"name": "transaction_amount", "type": "double"},
+            {"name": "items", "type": {"type": "array", "items": {"type": "record", "name": "OrderItem", "fields": [
+                {"name": "item_id", "type": "string"},
+                {"name": "item_name", "type": "string"},
+                {"name": "quantity", "type": "int"},
+                {"name": "unit_price", "type": "double"},
+                {"name": "seasonal_syrup_modifiers", "type": {"type": "array", "items": {"type": "record", "name": "SyrupModifier", "fields": [{"name": "syrup_name", "type": "string"}, {"name": "pumps", "type": "int"}]}}, "default": []}
+            ]}}, "default": []},
+            {"name": "payment", "type": {"type": "record", "name": "PaymentDetails", "fields": [
+                {"name": "primary_tender", "type": "string"},
+                {"name": "split_tender", "type": {"type": "array", "items": {"type": "record", "name": "SplitTenderDetail", "fields": [{"name": "tender_type", "type": "string"}, {"name": "amount", "type": "double"}]}}, "default": []}
+            ]}}
+        ]
+    })
+
+
 def process_and_write_silver_stream(kafka_raw_df, dbutils, config):
     """
-    Parses Avro via Confluent Schema Registry, applies event-time watermark,
-    executes two-stage salting aggregation to defeat data skew, and writes to Delta Silver.
+    Parses Avro via Confluent Schema Registry (or local schema in STATIC mode), applies
+    event-time watermark, executes two-stage salting aggregation to defeat data skew,
+    and writes to Delta Silver.
     """
     sr_conf = config["schema_registry"]
     delta_conf = config["delta_lake"]
@@ -422,32 +467,48 @@ def process_and_write_silver_stream(kafka_raw_df, dbutils, config):
         sr_conf["api_secret_ref"], "SCHEMA_REGISTRY_API_SECRET", ""
     )).strip()
 
-    masked_key = f"{sr_api_key[:4]}...{sr_api_key[-3:]}" if len(sr_api_key) >= 7 else ("(empty)" if not sr_api_key else "***")
-    print(f">> Schema Registry Address: {sr_url}")
-    print(f">> Schema Registry API Key: {masked_key}")
+    schema_mode = str(get_credential(
+        spark, dbutils, secret_scope,
+        "SCHEMA_REGISTRY_MODE", "SCHEMA_REGISTRY_MODE", sr_conf.get("mode", "DYNAMIC")
+    )).strip().upper()
 
-    # SCHEMA EVOLUTION MECHANISM:
-    # 1. Confluent Schema Registry stores versioned schemas.
-    # 2. avroSchemaEvolutionMode: "restart" instructs from_avro to throw an
-    #    UnknownFieldException when a message arrives with a newly registered schema ID.
-    # 3. Databricks job orchestrator auto-restarts the query, pulling the latest schema.
-    # 4. .option("mergeSchema", "true") on Delta sink writes new columns seamlessly.
-    schema_registry_options = {
-        "confluent.schema.registry.basic.auth.credentials.source": "USER_INFO",
-        "confluent.schema.registry.basic.auth.user.info": f"{sr_api_key}:{sr_api_secret}",
-        "avroSchemaEvolutionMode": sr_conf.get("avro_schema_evolution_mode", "restart"),
-        "mode": sr_conf.get("mode", "PERMISSIVE")
-    }
+    use_dynamic_sr = (
+        schema_mode != "STATIC"
+        and bool(sr_api_key)
+        and bool(sr_api_secret)
+        and sr_url.startswith("http")
+    )
 
-    # Deserialization of Confluent Avro wire-format payload
-    parsed_orders = kafka_raw_df.select(
-        from_avro(
-            data=col("value"),
-            subject=sr_conf["subject"],
-            schemaRegistryAddress=sr_url,
-            options=schema_registry_options
-        ).alias("order_event")
-    ).select("order_event.*")
+    if use_dynamic_sr:
+        masked_key = f"{sr_api_key[:4]}...{sr_api_key[-3:]}" if len(sr_api_key) >= 7 else "***"
+        print(f">> Schema Registry Mode: DYNAMIC (Confluent Cloud: {sr_url} | Key: {masked_key})")
+        schema_registry_options = {
+            "confluent.schema.registry.basic.auth.credentials.source": "USER_INFO",
+            "confluent.schema.registry.basic.auth.user.info": f"{sr_api_key}:{sr_api_secret}",
+            "avroSchemaEvolutionMode": sr_conf.get("avro_schema_evolution_mode", "restart"),
+            "mode": sr_conf.get("mode", "PERMISSIVE")
+        }
+        parsed_orders = kafka_raw_df.select(
+            from_avro(
+                data=col("value"),
+                subject=sr_conf["subject"],
+                schemaRegistryAddress=sr_url,
+                options=schema_registry_options
+            ).alias("order_event")
+        ).select("order_event.*")
+    else:
+        print(">> Schema Registry Mode: STATIC / LOCAL (Bypassing Schema Registry API Key using schemas/starbucks_live_orders_value.avsc)")
+        schema_json_str = load_avro_schema_json()
+        raw_avro_df = kafka_raw_df.withColumn(
+            "avro_payload",
+            expr("substring(value, 6, length(value) - 5)")
+        )
+        parsed_orders = raw_avro_df.select(
+            from_avro(
+                col("avro_payload"),
+                jsonFormatSchema=schema_json_str
+            ).alias("order_event")
+        ).select("order_event.*")
 
     # LATE-ARRIVING DATA HANDLING (The Subway Commuter):
     # Customer orders at 8:00 AM on mobile app, enters subway tunnel, arrives at Kafka 8:12 AM.

@@ -56,6 +56,7 @@ try:
         dbutils.widgets.text("KAFKA_API_KEY", os.getenv("KAFKA_API_KEY", ""), "2. Kafka API Key")
         dbutils.widgets.text("KAFKA_API_SECRET", os.getenv("KAFKA_API_SECRET", ""), "3. Kafka API Secret")
         dbutils.widgets.text("SCHEMA_REGISTRY_URL", os.getenv("SCHEMA_REGISTRY_URL", ""), "4. Schema Registry URL")
+        dbutils.widgets.dropdown("SCHEMA_REGISTRY_MODE", "DYNAMIC", ["DYNAMIC", "STATIC"], "4a. Schema Registry Mode")
         dbutils.widgets.text("SCHEMA_REGISTRY_API_KEY", os.getenv("SCHEMA_REGISTRY_API_KEY", ""), "5. SR API Key")
         dbutils.widgets.text("SCHEMA_REGISTRY_API_SECRET", os.getenv("SCHEMA_REGISTRY_API_SECRET", ""), "6. SR API Secret")
 except Exception:
