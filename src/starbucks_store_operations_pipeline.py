@@ -409,18 +409,22 @@ def process_and_write_silver_stream(kafka_raw_df, dbutils, config):
     secret_scope = sr_conf["secret_scope"]
 
     spark = kafka_raw_df.sparkSession
-    sr_url = get_credential(
+    sr_url = str(get_credential(
         spark, dbutils, secret_scope,
         sr_conf["url_key"], "SCHEMA_REGISTRY_URL", "http://localhost:8081"
-    )
-    sr_api_key = get_credential(
+    )).strip().rstrip("/")
+    sr_api_key = str(get_credential(
         spark, dbutils, secret_scope,
         sr_conf["api_key_ref"], "SCHEMA_REGISTRY_API_KEY", ""
-    )
-    sr_api_secret = get_credential(
+    )).strip()
+    sr_api_secret = str(get_credential(
         spark, dbutils, secret_scope,
         sr_conf["api_secret_ref"], "SCHEMA_REGISTRY_API_SECRET", ""
-    )
+    )).strip()
+
+    masked_key = f"{sr_api_key[:4]}...{sr_api_key[-3:]}" if len(sr_api_key) >= 7 else ("(empty)" if not sr_api_key else "***")
+    print(f">> Schema Registry Address: {sr_url}")
+    print(f">> Schema Registry API Key: {masked_key}")
 
     # SCHEMA EVOLUTION MECHANISM:
     # 1. Confluent Schema Registry stores versioned schemas.
