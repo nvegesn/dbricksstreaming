@@ -30,6 +30,7 @@ from pyspark.sql.functions import col
 from src.starbucks_store_operations_pipeline import (
     load_pipeline_config,
     init_spark_session,
+    init_unity_catalog_assets,
     get_dbutils,
     build_kafka_source,
     write_bronze_stream,
@@ -63,13 +64,10 @@ config_path = os.path.join(repo_root, "config", cfg_filename)
 config = load_pipeline_config(config_path)
 print(f"Loaded Configuration for Environment: {config.get('environment')} (from {cfg_filename})")
 
-# If Serverless, ensure Unity Catalog Volume exists for checkpoints
+# If Serverless, explicitly provision Unity Catalog Schema, Checkpoints Volume, and Delta Tables
 if selected_env == "serverless":
-    try:
-        spark.sql("CREATE VOLUME IF NOT EXISTS main.default.starbucks_checkpoints")
-        print("Ensured Unity Catalog volume 'main.default.starbucks_checkpoints' is ready.")
-    except Exception as e:
-        print(f"Volume check notice: {e}")
+    init_unity_catalog_assets(spark, config)
+    display(spark.sql("SHOW TABLES IN main.default"))
 
 # COMMAND ----------
 

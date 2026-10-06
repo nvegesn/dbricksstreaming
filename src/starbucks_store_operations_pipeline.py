@@ -262,6 +262,84 @@ def build_kafka_source(spark, dbutils, config):
     return spark.readStream.format("kafka").options(**kafka_options).load()
 
 
+def init_unity_catalog_assets(spark, config):
+    """
+    Explicitly provisions Unity Catalog Schema, Volume for streaming checkpoints,
+    and Delta Bronze & Silver tables if Unity Catalog names are configured.
+    """
+    delta_conf = config.get("delta_lake", {})
+    catalog = delta_conf.get("catalog", "main")
+    database = delta_conf.get("database", "default")
+    bronze_table = delta_conf.get("bronze_table_name")
+    silver_table = delta_conf.get("silver_table_name")
+
+    print(f">> Initializing Unity Catalog assets in {catalog}.{database}...")
+
+    # 1. Provision Schema / Database
+    try:
+        spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{database}")
+        print(f"Verified Schema: {catalog}.{database}")
+    except Exception as e:
+        print(f"Notice during CREATE SCHEMA: {e}")
+
+    # 2. Provision Volume for Streaming Checkpoints
+    try:
+        spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.{database}.starbucks_checkpoints")
+        print(f"Verified Checkpoints Volume: {catalog}.{database}.starbucks_checkpoints")
+    except Exception as e:
+        print(f"Notice during CREATE VOLUME: {e}")
+
+    # 3. Explicitly Provision Bronze Delta Table
+    if bronze_table:
+        try:
+            spark.sql(f"""
+                CREATE TABLE IF NOT EXISTS {bronze_table} (
+                    kafka_key STRING COMMENT 'Kafka message partition key (store_id)',
+                    raw_payload BINARY COMMENT 'Raw Confluent Avro wire payload with 5-byte header',
+                    topic STRING COMMENT 'Source Kafka topic name',
+                    partition INT COMMENT 'Kafka topic partition number',
+                    offset BIGINT COMMENT 'Monotonically increasing Kafka partition offset',
+                    kafka_published_timestamp TIMESTAMP COMMENT 'Kafka broker publishing timestamp',
+                    bronze_ingestion_timestamp TIMESTAMP COMMENT 'Lakehouse ingestion timestamp'
+                )
+                USING DELTA
+                COMMENT 'Bronze Layer: Immutable audit log of raw Starbucks order events'
+                TBLPROPERTIES (
+                    'delta.enableChangeDataFeed' = 'true',
+                    'delta.autoOptimize.optimizeWrite' = 'true',
+                    'delta.autoOptimize.autoCompact' = 'true'
+                )
+            """)
+            print(f"Verified Bronze Delta Table DDL: {bronze_table}")
+        except Exception as e:
+            print(f"Notice during Bronze CREATE TABLE: {e}")
+
+    # 4. Explicitly Provision Silver Delta Table
+    if silver_table:
+        try:
+            spark.sql(f"""
+                CREATE TABLE IF NOT EXISTS {silver_table} (
+                    window_start TIMESTAMP COMMENT 'Start boundary of 5-minute aggregation window',
+                    window_end TIMESTAMP COMMENT 'End boundary of 5-minute aggregation window',
+                    store_id STRING COMMENT 'Store identifier e.g. STORE-NYC-7381',
+                    total_order_count BIGINT COMMENT 'Total orders processed within 5-minute window',
+                    avg_order_value DOUBLE COMMENT 'Average Order Value (AOV) in USD calculated via exact algebraic rollup',
+                    avg_wait_time_seconds DOUBLE COMMENT 'Average fulfillment wait time in seconds',
+                    metrics_calculated_timestamp TIMESTAMP COMMENT 'Timestamp when metrics calculation was committed'
+                )
+                USING DELTA
+                PARTITIONED BY (store_id)
+                COMMENT 'Silver Layer: Real-time store performance metrics with Times Square salting'
+                TBLPROPERTIES (
+                    'delta.autoOptimize.optimizeWrite' = 'true',
+                    'delta.autoOptimize.autoCompact' = 'true'
+                )
+            """)
+            print(f"Verified Silver Delta Table DDL: {silver_table}")
+        except Exception as e:
+            print(f"Notice during Silver CREATE TABLE: {e}")
+
+
 def write_bronze_stream(kafka_raw_df, config):
     """
     Writes raw event stream to Delta Bronze table for immutable auditability and replay.
