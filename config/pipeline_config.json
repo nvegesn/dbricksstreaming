@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "environment": "production",
+  "pipeline_name": "starbucks-store-ops-realtime",
+  "confluent_kafka": {
+    "secret_scope": "starbucks-confluent-scope",
+    "bootstrap_servers_key": "kafka-bootstrap-servers",
+    "api_key_ref": "kafka-api-key",
+    "api_secret_ref": "kafka-api-secret",
+    "topic": "starbucks_live_orders",
+    "consumer_group_id": "starbucks-ops-metrics-cg",
+    "starting_offsets": "latest",
+    "fail_on_data_loss": "false"
+  },
+  "schema_registry": {
+    "secret_scope": "starbucks-confluent-scope",
+    "url_key": "schema-registry-url",
+    "api_key_ref": "schema-registry-api-key",
+    "api_secret_ref": "schema-registry-api-secret",
+    "subject": "starbucks_live_orders-value",
+    "avro_schema_evolution_mode": "restart",
+    "mode": "PERMISSIVE"
+  },
+  "delta_lake": {
+    "catalog": "starbucks_ops_catalog",
+    "database": "store_analytics",
+    "bronze_table_path": "abfss://bronze@starbuckslakehouse.dfs.core.windows.net/orders/bronze_live_orders",
+    "bronze_checkpoint_path": "abfss://checkpoints@starbuckslakehouse.dfs.core.windows.net/orders/bronze_live_orders_ckpt",
+    "silver_table_path": "abfss://silver@starbuckslakehouse.dfs.core.windows.net/orders/silver_store_operations_metrics",
+    "silver_checkpoint_path": "abfss://checkpoints@starbuckslakehouse.dfs.core.windows.net/orders/silver_store_operations_metrics_ckpt"
+  },
+  "tuning_parameters": {
+    "max_offsets_per_trigger": 50000,
+    "min_partitions": 64,
+    "salt_factor": 16,
+    "watermark_duration": "15 minutes",
+    "window_duration": "5 minutes",
+    "slide_duration": "5 minutes",
+    "trigger_processing_time": "10 seconds",
+    "spark_shuffle_partitions": 128
+  }
+}

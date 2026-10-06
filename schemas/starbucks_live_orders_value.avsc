@@ -1,0 +1,84 @@
+{
+  "type": "record",
+  "name": "LiveOrderEvent",
+  "namespace": "com.starbucks.analytics.orders",
+  "doc": "Real-time Starbucks order transaction and fulfillment telemetry for POS and Mobile App",
+  "fields": [
+    { "name": "order_id", "type": "string", "doc": "Unique order identifier" },
+    { "name": "store_id", "type": "string", "doc": "Global store identifier e.g. STORE-NYC-7381" },
+    { "name": "customer_id", "type": ["null", "string"], "default": null, "doc": "Starbucks Rewards membership identifier" },
+    {
+      "name": "channel",
+      "type": {
+        "type": "enum",
+        "name": "OrderChannel",
+        "symbols": ["IN_STORE_POS", "DRIVE_THRU", "MOBILE_APP_PICKUP", "MOBILE_APP_DELIVERY"]
+      },
+      "doc": "Originating transaction channel"
+    },
+    { "name": "order_placed_timestamp", "type": "string", "doc": "ISO-8601 UTC timestamp when customer ordered" },
+    { "name": "order_fulfilled_timestamp", "type": ["null", "string"], "default": null, "doc": "ISO-8601 UTC timestamp when barista marked ready" },
+    { "name": "transaction_amount", "type": "double", "doc": "Total monetary amount charged" },
+    {
+      "name": "items",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "OrderItem",
+          "fields": [
+            { "name": "item_id", "type": "string" },
+            { "name": "item_name", "type": "string" },
+            { "name": "quantity", "type": "int" },
+            { "name": "unit_price", "type": "double" },
+            {
+              "name": "seasonal_syrup_modifiers",
+              "type": {
+                "type": "array",
+                "items": {
+                  "type": "record",
+                  "name": "SyrupModifier",
+                  "fields": [
+                    { "name": "syrup_name", "type": "string" },
+                    { "name": "pumps", "type": "int" }
+                  ]
+                }
+              },
+              "default": [],
+              "doc": "Dynamic seasonal modifications e.g. Pumpkin Spice, Brown Sugar"
+            }
+          ]
+        }
+      },
+      "default": [],
+      "doc": "Line items in the order"
+    },
+    {
+      "name": "payment",
+      "type": {
+        "type": "record",
+        "name": "PaymentDetails",
+        "fields": [
+          { "name": "primary_tender", "type": "string" },
+          {
+            "name": "split_tender",
+            "type": {
+              "type": "array",
+              "items": {
+                "type": "record",
+                "name": "SplitTenderDetail",
+                "fields": [
+                  { "name": "tender_type", "type": "string" },
+                  { "name": "amount", "type": "double" }
+                ]
+              }
+            },
+            "default": [],
+            "doc": "Split tender combinations e.g. Starbucks Card + Apple Pay"
+          }
+        ]
+      },
+      "doc": "Financial settlement metadata"
+    }
+  ]
+}

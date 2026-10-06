@@ -1,0 +1,94 @@
+name: Deploy Starbucks Pipeline to Databricks
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: "Target deployment environment (dev or prod)"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - prod
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test:
+    name: Run Unit Tests & Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Test Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 pytest
+
+      - name: Execute Salting & Pipeline Tests
+        run: |
+          python -m unittest discover -s tests -p "test_*.py"
+
+  deploy:
+    name: Deploy Databricks Asset Bundle (DAB)
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      TARGET_ENV: ${{ github.event.inputs.target_env || (github.ref == 'refs/heads/main' && 'prod' || 'dev') }}
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Provision / Sync Confluent Secrets to Databricks Secret Scope
+        # Synchronizes Confluent API credentials securely into Databricks Secret Scope
+        run: |
+          echo ">> Ensuring Secret Scope 'starbucks-confluent-scope' exists in Databricks..."
+          databricks secrets create-scope --scope starbucks-confluent-scope || true
+
+          echo ">> Syncing Kafka & Schema Registry credentials from GitHub Secrets..."
+          databricks secrets put-secret --scope starbucks-confluent-scope --key kafka-bootstrap-servers --string-value "${{ secrets.CONFLUENT_BOOTSTRAP_SERVERS }}"
+          databricks secrets put-secret --scope starbucks-confluent-scope --key kafka-api-key --string-value "${{ secrets.CONFLUENT_KAFKA_API_KEY }}"
+          databricks secrets put-secret --scope starbucks-confluent-scope --key kafka-api-secret --string-value "${{ secrets.CONFLUENT_KAFKA_API_SECRET }}"
+          databricks secrets put-secret --scope starbucks-confluent-scope --key schema-registry-url --string-value "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_URL }}"
+          databricks secrets put-secret --scope starbucks-confluent-scope --key schema-registry-api-key --string-value "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_API_KEY }}"
+          databricks secrets put-secret --scope starbucks-confluent-scope --key schema-registry-api-secret --string-value "${{ secrets.CONFLUENT_SCHEMA_REGISTRY_API_SECRET }}"
+
+      - name: Validate Databricks Asset Bundle
+        run: |
+          databricks bundle validate -t ${{ env.TARGET_ENV }} \
+            --var="databricks_host=${{ secrets.DATABRICKS_HOST }}" \
+            --var="databricks_client_id=${{ secrets.DATABRICKS_CLIENT_ID }}"
+
+      - name: Deploy Pipeline Bundle & Cluster Definition
+        run: |
+          databricks bundle deploy -t ${{ env.TARGET_ENV }} \
+            --var="databricks_host=${{ secrets.DATABRICKS_HOST }}" \
+            --var="databricks_client_id=${{ secrets.DATABRICKS_CLIENT_ID }}"
+
+      - name: Start / Refresh Streaming Workflow (Optional on Production Merge)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo ">> Triggering active streaming query execution..."
+          databricks bundle run -t prod starbucks_realtime_store_ops_job

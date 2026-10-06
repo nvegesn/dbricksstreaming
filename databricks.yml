@@ -1,0 +1,73 @@
+bundle:
+  name: starbucks_store_operations
+
+include:
+  - config/*.json
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: ${var.databricks_host}
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+
+  prod:
+    mode: production
+    workspace:
+      host: ${var.databricks_host}
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      service_principal_name: ${var.databricks_client_id}
+
+variables:
+  databricks_host:
+    description: "Databricks Workspace URL"
+  databricks_client_id:
+    description: "Service Principal Client ID (Application ID) for production"
+    default: ""
+  kafka_bootstrap_servers:
+    description: "Confluent Cloud Kafka Bootstrap Servers"
+    default: "pkc-xxxxx.us-east-1.aws.confluent.cloud:9092"
+  schema_registry_url:
+    description: "Confluent Cloud Schema Registry URL"
+    default: "https://psrc-xxxxx.us-east-1.aws.confluent.cloud"
+
+resources:
+  jobs:
+    starbucks_realtime_store_ops_job:
+      name: "[${bundle.target}] Starbucks Real-Time Store Operations Pipeline"
+      
+      tasks:
+        - task_key: run_streaming_pipeline
+          spark_python_task:
+            python_file: src/starbucks_store_operations_pipeline.py
+            parameters:
+              - config/pipeline_config.json
+
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: "i3.2xlarge"
+            driver_node_type_id: "i3.xlarge"
+            autoscale:
+              min_workers: 2
+              max_workers: 8
+            spark_conf:
+              # RocksDB State Store for Off-Heap state management
+              "spark.sql.streaming.stateStore.providerClass": "com.databricks.sql.streaming.state.RocksDBStateStoreProvider"
+              "spark.sql.streaming.stateStore.rocksdb.changelogCheckpointing.enabled": "true"
+              # Adaptive Query Execution & Backpressure
+              "spark.sql.adaptive.enabled": "true"
+              "spark.sql.shuffle.partitions": "128"
+              "spark.streaming.backpressure.enabled": "true"
+            custom_tags:
+              "Workload": "StarbucksStoreOperations"
+              "Tier": "MissionCritical"
+
+          max_retries: 10
+          min_retry_interval_millis: 15000
+          retry_on_timeout: false
+
+      email_notifications:
+        on_failure:
+          - "data-engineering-oncall@starbucks.com"

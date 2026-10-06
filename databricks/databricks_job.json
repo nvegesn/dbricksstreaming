@@ -1,0 +1,42 @@
+{
+  "name": "Starbucks_Realtime_Store_Operations_Pipeline",
+  "email_notifications": {
+    "on_failure": ["data-engineering-oncall@starbucks.com"]
+  },
+  "max_concurrent_runs": 1,
+  "tasks": [
+    {
+      "task_key": "stream_store_operations_metrics",
+      "spark_python_task": {
+        "python_file": "dbfs:/FileStore/starbucks/src/starbucks_store_operations_pipeline.py",
+        "parameters": [
+          "dbfs:/FileStore/starbucks/config/pipeline_config.json"
+        ]
+      },
+      "new_cluster": {
+        "spark_version": "14.3.x-scala2.12",
+        "node_type_id": "i3.2xlarge",
+        "driver_node_type_id": "i3.xlarge",
+        "autoscale": {
+          "min_workers": 2,
+          "max_workers": 8
+        },
+        "spark_conf": {
+          "spark.sql.adaptive.enabled": "true",
+          "spark.sql.shuffle.partitions": "128",
+          "spark.sql.streaming.stateStore.providerClass": "com.databricks.sql.streaming.state.RocksDBStateStoreProvider",
+          "spark.sql.streaming.stateStore.rocksdb.changelogCheckpointing.enabled": "true",
+          "spark.streaming.backpressure.enabled": "true"
+        },
+        "custom_tags": {
+          "Workload": "StarbucksStoreOperationsRealtime",
+          "Tier": "MissionCritical"
+        }
+      },
+      "max_retries": 10,
+      "min_retry_interval_millis": 15000,
+      "retry_on_timeout": false,
+      "timeout_seconds": 0
+    }
+  ]
+}

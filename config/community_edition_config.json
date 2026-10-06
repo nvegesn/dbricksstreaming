@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "environment": "community_edition",
+  "pipeline_name": "starbucks-store-ops-realtime-dev",
+  "confluent_kafka": {
+    "secret_scope": "starbucks-confluent-scope",
+    "bootstrap_servers_key": "kafka-bootstrap-servers",
+    "api_key_ref": "kafka-api-key",
+    "api_secret_ref": "kafka-api-secret",
+    "topic": "starbucks_live_orders",
+    "consumer_group_id": "starbucks-ops-metrics-dev-cg",
+    "starting_offsets": "latest",
+    "fail_on_data_loss": "false"
+  },
+  "schema_registry": {
+    "secret_scope": "starbucks-confluent-scope",
+    "url_key": "schema-registry-url",
+    "api_key_ref": "schema-registry-api-key",
+    "api_secret_ref": "schema-registry-api-secret",
+    "subject": "starbucks_live_orders-value",
+    "avro_schema_evolution_mode": "restart",
+    "mode": "PERMISSIVE"
+  },
+  "delta_lake": {
+    "bronze_table_path": "dbfs:/FileStore/starbucks/bronze_live_orders",
+    "bronze_checkpoint_path": "dbfs:/FileStore/starbucks/checkpoints/bronze_ckpt",
+    "silver_table_path": "dbfs:/FileStore/starbucks/silver_store_operations_metrics",
+    "silver_checkpoint_path": "dbfs:/FileStore/starbucks/checkpoints/silver_ckpt"
+  },
+  "tuning_parameters": {
+    "max_offsets_per_trigger": 5000,
+    "min_partitions": 4,
+    "salt_factor": 4,
+    "watermark_duration": "15 minutes",
+    "window_duration": "5 minutes",
+    "slide_duration": "5 minutes",
+    "trigger_processing_time": "10 seconds",
+    "spark_shuffle_partitions": 4
+  }
+}
