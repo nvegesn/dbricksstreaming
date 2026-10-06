@@ -282,16 +282,24 @@ def write_bronze_stream(kafka_raw_df, config):
     # EXACTLY-ONCE GUARANTEE:
     # OutputMode("append") + checkpointLocation records micro-batch offsets.
     # Delta Lake ensures idempotent atomic commits into _delta_log.
-    return (
+    writer = (
         bronze_df.writeStream
         .queryName("Starbucks_Bronze_Ingest")
         .format("delta")
         .outputMode("append")
         .option("checkpointLocation", delta_conf["bronze_checkpoint_path"])
         .option("mergeSchema", "true")
-        .trigger(processingTime=tuning_conf.get("trigger_processing_time", "10 seconds"))
-        .start(delta_conf["bronze_table_path"])
     )
+
+    if tuning_conf.get("trigger_available_now", False):
+        writer = writer.trigger(availableNow=True)
+    else:
+        writer = writer.trigger(processingTime=tuning_conf.get("trigger_processing_time", "10 seconds"))
+
+    table_name = delta_conf.get("bronze_table_name")
+    if table_name:
+        return writer.toTable(table_name)
+    return writer.start(delta_conf["bronze_table_path"])
 
 
 def process_and_write_silver_stream(kafka_raw_df, dbutils, config):
@@ -426,16 +434,24 @@ def process_and_write_silver_stream(kafka_raw_df, dbutils, config):
     # Checkpoint records commit logs; Delta Lake commits atomic metadata JSON.
     # If cluster dies, uncommitted temporary writes are discarded; on recovery,
     # the exact Kafka offset batch is re-read without duplicate rows in Silver.
-    return (
+    writer = (
         stage2_final_agg.writeStream
         .queryName("Starbucks_Silver_Metrics")
         .format("delta")
         .outputMode("append")
         .option("checkpointLocation", delta_conf["silver_checkpoint_path"])
         .option("mergeSchema", "true")
-        .trigger(processingTime=tuning_conf.get("trigger_processing_time", "10 seconds"))
-        .start(delta_conf["silver_table_path"])
     )
+
+    if tuning_conf.get("trigger_available_now", False):
+        writer = writer.trigger(availableNow=True)
+    else:
+        writer = writer.trigger(processingTime=tuning_conf.get("trigger_processing_time", "10 seconds"))
+
+    table_name = delta_conf.get("silver_table_name")
+    if table_name:
+        return writer.toTable(table_name)
+    return writer.start(delta_conf["silver_table_path"])
 
 
 def main():

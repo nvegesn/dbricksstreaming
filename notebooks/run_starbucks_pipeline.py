@@ -37,10 +37,11 @@ from src.starbucks_store_operations_pipeline import (
     StarbucksStreamMetricsListener
 )
 
-# Optional interactive widgets for Community Edition (fills from env vars or allows manual entry)
+# Optional interactive widgets (fills from env vars or allows manual entry)
 try:
     dbutils = get_dbutils(spark)
     if dbutils:
+        dbutils.widgets.dropdown("ENVIRONMENT", "serverless", ["serverless", "community_edition"], "0. Target Environment")
         dbutils.widgets.text("KAFKA_BOOTSTRAP_SERVERS", os.getenv("KAFKA_BOOTSTRAP_SERVERS", ""), "1. Kafka Bootstrap Server")
         dbutils.widgets.text("KAFKA_API_KEY", os.getenv("KAFKA_API_KEY", ""), "2. Kafka API Key")
         dbutils.widgets.text("KAFKA_API_SECRET", os.getenv("KAFKA_API_SECRET", ""), "3. Kafka API Secret")
@@ -50,9 +51,25 @@ try:
 except Exception:
     pass
 
-config_path = os.path.join(repo_root, "config", "community_edition_config.json")
+selected_env = "serverless"
+try:
+    if dbutils:
+        selected_env = dbutils.widgets.get("ENVIRONMENT") or "serverless"
+except Exception:
+    pass
+
+cfg_filename = "serverless_config.json" if selected_env == "serverless" else "community_edition_config.json"
+config_path = os.path.join(repo_root, "config", cfg_filename)
 config = load_pipeline_config(config_path)
-print(f"Loaded Configuration for Environment: {config.get('environment')}")
+print(f"Loaded Configuration for Environment: {config.get('environment')} (from {cfg_filename})")
+
+# If Serverless, ensure Unity Catalog Volume exists for checkpoints
+if selected_env == "serverless":
+    try:
+        spark.sql("CREATE VOLUME IF NOT EXISTS main.default.starbucks_checkpoints")
+        print("Ensured Unity Catalog volume 'main.default.starbucks_checkpoints' is ready.")
+    except Exception as e:
+        print(f"Volume check notice: {e}")
 
 # COMMAND ----------
 
@@ -77,6 +94,14 @@ print(">> Starting Silver Curated Metrics Stream (Watermarked & Two-Stage Salted
 silver_query = process_and_write_silver_stream(kafka_raw_stream, dbutils, config)
 print(f"Silver Stream ID: {silver_query.id}")
 
+# On Serverless (availableNow mode), await batch completion
+is_available_now = config.get("tuning_parameters", {}).get("trigger_available_now", False)
+if is_available_now:
+    print(">> Serverless availableNow trigger active. Waiting for micro-batch to finish processing...")
+    bronze_query.awaitTermination()
+    silver_query.awaitTermination()
+    print(">> Micro-batch processed successfully!")
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -85,8 +110,14 @@ print(f"Silver Stream ID: {silver_query.id}")
 
 # COMMAND ----------
 
-silver_path = config["delta_lake"]["silver_table_path"]
+silver_table_name = config.get("delta_lake", {}).get("silver_table_name")
+silver_path = config.get("delta_lake", {}).get("silver_table_path")
+
+if silver_table_name:
+    df_silver = spark.table(silver_table_name)
+else:
+    df_silver = spark.read.format("delta").load(silver_path)
+
 display(
-    spark.read.format("delta").load(silver_path)
-    .orderBy(col("window_end").desc(), col("avg_wait_time_seconds").desc())
+    df_silver.orderBy(col("window_end").desc(), col("avg_wait_time_seconds").desc())
 )
